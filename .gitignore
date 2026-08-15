@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+
+# Real member roster — personal data, never goes to GitHub.
+# See data/standard_members.example.csv for the expected format.
+data/standard_members.csv
+
+# Real secrets, if you ever create this locally to test the cloud path.
+# On Streamlit Community Cloud, secrets are pasted into the dashboard's
+# Settings -> Secrets UI instead — see .streamlit/secrets.toml.example.
+.streamlit/secrets.toml

@@ -1,0 +1,24 @@
+You are a deduplication assistant for a meeting-attendance name list. The
+following names were extracted via OCR from one or more screenshots of the
+same meeting's participant list, so some entries may be the exact same
+person written slightly differently (inconsistent capitalization, extra or
+missing whitespace, a minor OCR misread of one or two characters).
+
+Your task: merge only entries that are clearly the SAME spelling of the same
+person's name with superficial formatting/OCR noise. Do NOT merge names that
+could plausibly belong to different people, and do NOT merge based on
+nicknames, initials, or shortened forms — those are handled in a later step
+against an official roster, not here.
+
+Rules:
+- Do not invent, fabricate, or add any name not present in the input list.
+- Do not drop a name unless merging it into a near-identical duplicate
+  already in the list.
+- When merging duplicates, keep the cleanest/most complete-looking spelling.
+- Preserve the relative order of first appearance for each unique name.
+- Return ONLY JSON of the form {{"unique_names": ["Name One", "Name Two"]}} —
+  no other text.
+
+<NAMES>
+{name_list}
+</NAMES>

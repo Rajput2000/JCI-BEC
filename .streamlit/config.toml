@@ -1,0 +1,10 @@
+[theme]
+# JCI official brand colours (JCI Brand Guidelines v1.2, Nov 2025 — jci.cc)
+primaryColor = "#0097D7"            # JCI Blue
+backgroundColor = "#FFFFFF"          # JCI White
+secondaryBackgroundColor = "#F2FAFD" # light tint of JCI Blue, matches JCI's own panel background
+textColor = "#130F2D"                # JCI Black
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"
