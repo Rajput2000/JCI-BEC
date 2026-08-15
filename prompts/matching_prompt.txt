@@ -12,8 +12,8 @@ Your task is to match each name from the **Meeting Attendance List** to the sing
 - Every name from the Meeting Attendance List must appear exactly once in the first column, in the same order given.
 - The second column must contain only names that exist in the Standard Member List I provided.
 - If a meeting name is already an exact match for a standard name, use that standard name.
-- If a meeting name is ambiguous or equally similar to multiple standard names, pick the most likely match for the second column, and list the other plausible candidate name(s) from the Standard Member List in the Notes column, so a human reviewer can double-check your pick.
-- **Do not invent, fabricate, or hallucinate any names.** If a meeting name cannot be reasonably matched to any name in the Standard Member List, write `[NO MATCH]` in the second column, and list any loosely similar candidate name(s) from the Standard Member List in the Notes column (comma-separated) so a human reviewer has a starting point. If truly nothing is even loosely similar, leave Notes blank.
+- If a meeting name is ambiguous or equally similar to multiple standard names, pick the most likely match for the second column. In the Notes column, briefly say why it's ambiguous, then list the other plausible candidate(s), e.g. `Also close to: <Name A>, <Name B>` — never just the bare name(s) with no lead-in text.
+- **Do not invent, fabricate, or hallucinate any names.** If a meeting name cannot be reasonably matched to any name in the Standard Member List, write `[NO MATCH]` in the second column. If there are any loosely similar candidate(s) from the Standard Member List worth a human double-checking, say so in the Notes column with a lead-in phrase, e.g. `Possible matches: <Name A>, <Name B>` — never just the bare name(s) with no lead-in text. If truly nothing is even loosely similar, leave Notes blank.
 - Do not add any names to the Standard Member List.
 - Do not explain your reasoning outside the table unless asked.
 

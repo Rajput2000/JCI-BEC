@@ -38,6 +38,7 @@ for key, default in [
     ("dedupe_warning", None),
     ("match_rows", None),
     ("match_error", None),
+    ("input_reset_counter", 0),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -53,8 +54,23 @@ def _reset_downstream_state() -> None:
     st.session_state.match_error = None
 
 
+def _clear_all() -> None:
+    """Full reset: wipes the accumulated name list and all downstream state,
+    and bumps input_reset_counter so the uploader/paste-box widgets — which
+    are keyed off it — get recreated empty instead of keeping stale content."""
+    st.session_state.raw_names = []
+    st.session_state.extraction_errors = []
+    st.session_state.input_reset_counter += 1
+    _reset_downstream_state()
+
+
 # --- Step 1: get attendee names ------------------------------------------
 st.header("1. Provide attendee names")
+st.caption(
+    "Upload screenshots and/or paste names — each action ADDS to the "
+    "combined list below rather than replacing it, so you can mix both. "
+    "Use Clear All to start over."
+)
 upload_tab, paste_tab = st.tabs(["📷 Upload Screenshots", "📝 Paste Names"])
 
 with upload_tab:
@@ -62,13 +78,14 @@ with upload_tab:
         "Screenshots of the meeting participant list",
         type=["png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
+        key=f"uploader_{st.session_state.input_reset_counter}",
     )
     if st.button("Extract Names", disabled=not uploaded_files, type="primary"):
         files = [(f.getvalue(), f.name) for f in uploaded_files]
         with st.spinner(f"Extracting names from {len(files)} image(s)..."):
-            raw_names, errors = extract_names_from_images(files)
-        st.session_state.raw_names = raw_names
-        st.session_state.extraction_errors = errors
+            new_names, errors = extract_names_from_images(files)
+        st.session_state.raw_names += new_names
+        st.session_state.extraction_errors += errors
         _reset_downstream_state()
 
     if st.session_state.extraction_errors:
@@ -83,15 +100,25 @@ with paste_tab:
         "Attendee names — one per line, or separated by commas",
         height=180,
         placeholder="G. Raji\nanifat raji\nBob Nobody",
+        key=f"paste_area_{st.session_state.input_reset_counter}",
     )
     pasted_names = parse_pasted_names(pasted_text)
-    if st.button("Use These Names", disabled=not pasted_names, type="primary"):
-        st.session_state.raw_names = pasted_names
-        st.session_state.extraction_errors = []
+    if st.button("Add These Names", disabled=not pasted_names, type="primary"):
+        st.session_state.raw_names += pasted_names
         _reset_downstream_state()
 
 if st.session_state.raw_names:
-    st.write(f"{len(st.session_state.raw_names)} raw name(s) ready for deduplication.")
+    names_col, clear_col = st.columns([5, 1])
+    with names_col:
+        st.write(f"{len(st.session_state.raw_names)} raw name(s) ready for deduplication.")
+    with clear_col:
+        # on_click, not the usual "if st.button(...)" pattern used elsewhere
+        # in this file: the callback runs *before* the script re-executes
+        # top-to-bottom, so the counter bump is already in effect by the
+        # time the (earlier-in-the-script) uploader/paste-box widgets are
+        # rendered — an inline "if st.button(...): _clear_all()" here would
+        # clear state too late for that same run to show it.
+        st.button("Clear All", width="stretch", on_click=_clear_all)
     with st.expander("Show raw names"):
         st.write(st.session_state.raw_names)
 
