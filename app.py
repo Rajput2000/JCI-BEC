@@ -1,7 +1,8 @@
-"""Streamlit app: upload meeting-attendance screenshots, extract names with a
-Groq vision model, dedupe (code prefilter + Groq LLM), review/edit the list,
-then match against the standard member roster with the user's matching
-prompt and display the results.
+"""Streamlit app: get attendee names either by uploading meeting-attendance
+screenshots (extracted with a Groq vision model) or by pasting a plain-text
+list, dedupe (code prefilter + Groq LLM), review/edit the list, then match
+against the standard member roster with the user's matching prompt and
+display the results.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from core.groq_client import GroqCallError
 from core.matching import run_matching
 from core.members import MembersLoadError, load_standard_members
 from core.parsing import MarkdownTableParseError, parse_markdown_table, to_display_rows
+from core.pasted_names import parse_pasted_names
 
 st.set_page_config(
     page_title="JCI-BEC Attendance Matcher",
@@ -25,7 +27,7 @@ st.set_page_config(
 inject_theme()
 render_header(
     "JCI-BEC Attendance Matcher",
-    "Upload meeting-attendance screenshots to extract attendee names, "
+    "Upload meeting-attendance screenshots, or paste a list of names, "
     "then match them against the standard member roster.",
 )
 
@@ -41,34 +43,56 @@ for key, default in [
         st.session_state[key] = default
 
 
-# --- Step 1: upload + extract -----------------------------------------
-st.header("1. Upload attendance screenshots")
-uploaded_files = st.file_uploader(
-    "Screenshots of the meeting participant list",
-    type=["png", "jpg", "jpeg", "webp"],
-    accept_multiple_files=True,
-)
-
-if st.button("Extract Names", disabled=not uploaded_files, type="primary"):
-    files = [(f.getvalue(), f.name) for f in uploaded_files]
-    with st.spinner(f"Extracting names from {len(files)} image(s)..."):
-        raw_names, errors = extract_names_from_images(files)
-    st.session_state.raw_names = raw_names
-    st.session_state.extraction_errors = errors
-    # Reset downstream state since the source names just changed.
+def _reset_downstream_state() -> None:
+    """Called whenever the raw name list changes (new upload, new paste),
+    since dedup/review/match all depend on it and would otherwise show
+    stale results from a previous source."""
     st.session_state.deduped_names = None
     st.session_state.dedupe_warning = None
     st.session_state.match_rows = None
     st.session_state.match_error = None
 
-if st.session_state.extraction_errors:
-    with st.expander(f"{len(st.session_state.extraction_errors)} file(s) had issues", expanded=False):
-        for filename, error in st.session_state.extraction_errors:
-            st.warning(error)
+
+# --- Step 1: get attendee names ------------------------------------------
+st.header("1. Provide attendee names")
+upload_tab, paste_tab = st.tabs(["📷 Upload Screenshots", "📝 Paste Names"])
+
+with upload_tab:
+    uploaded_files = st.file_uploader(
+        "Screenshots of the meeting participant list",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+    )
+    if st.button("Extract Names", disabled=not uploaded_files, type="primary"):
+        files = [(f.getvalue(), f.name) for f in uploaded_files]
+        with st.spinner(f"Extracting names from {len(files)} image(s)..."):
+            raw_names, errors = extract_names_from_images(files)
+        st.session_state.raw_names = raw_names
+        st.session_state.extraction_errors = errors
+        _reset_downstream_state()
+
+    if st.session_state.extraction_errors:
+        with st.expander(
+            f"{len(st.session_state.extraction_errors)} file(s) had issues", expanded=False
+        ):
+            for filename, error in st.session_state.extraction_errors:
+                st.warning(error)
+
+with paste_tab:
+    pasted_text = st.text_area(
+        "Attendee names — one per line, or separated by commas",
+        height=180,
+        placeholder="G. Raji\nanifat raji\nBob Nobody",
+    )
+    pasted_names = parse_pasted_names(pasted_text)
+    if st.button("Use These Names", disabled=not pasted_names, type="primary"):
+        st.session_state.raw_names = pasted_names
+        st.session_state.extraction_errors = []
+        _reset_downstream_state()
 
 if st.session_state.raw_names:
-    st.write(f"Extracted {len(st.session_state.raw_names)} raw name(s) across all images.")
-    with st.expander("Show raw extracted names"):
+    st.write(f"{len(st.session_state.raw_names)} raw name(s) ready for deduplication.")
+    with st.expander("Show raw names"):
         st.write(st.session_state.raw_names)
 
 
