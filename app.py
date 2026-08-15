@@ -82,8 +82,21 @@ with upload_tab:
     )
     if st.button("Extract Names", disabled=not uploaded_files, type="primary"):
         files = [(f.getvalue(), f.name) for f in uploaded_files]
-        with st.spinner(f"Extracting names from {len(files)} image(s)..."):
-            new_names, errors = extract_names_from_images(files)
+        total = len(files)
+        progress_bar = st.progress(0.0, text=f"Extracting names — 0 of {total} done...")
+
+        def _update_progress(completed: int, completed_total: int, filename: str) -> None:
+            left = completed_total - completed
+            progress_bar.progress(
+                completed / completed_total,
+                text=(
+                    f"Extracting names — {completed} of {completed_total} done "
+                    f"({left} left) — just finished {filename}"
+                ),
+            )
+
+        new_names, errors = extract_names_from_images(files, on_progress=_update_progress)
+        progress_bar.empty()
         st.session_state.raw_names += new_names
         st.session_state.extraction_errors += errors
         _reset_downstream_state()

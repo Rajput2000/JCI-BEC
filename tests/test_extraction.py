@@ -62,3 +62,32 @@ def test_extract_names_from_images_aggregates(monkeypatch):
     all_names, errors = extraction.extract_names_from_images(files)
     assert all_names == ["A", "B", "A", "B"]
     assert errors == []
+
+
+def test_extract_names_from_images_reports_progress(monkeypatch):
+    monkeypatch.setattr(
+        extraction,
+        "safe_chat_completion",
+        lambda **kwargs: _fake_response(json.dumps({"names": ["A"]})),
+    )
+    files = [(_png_bytes(), "one.png"), (_png_bytes(), "two.png"), (_png_bytes(), "three.png")]
+
+    calls = []
+    extraction.extract_names_from_images(
+        files, on_progress=lambda completed, total, filename: calls.append((completed, total, filename))
+    )
+
+    assert calls == [(1, 3, "one.png"), (2, 3, "two.png"), (3, 3, "three.png")]
+
+
+def test_extract_names_from_images_progress_called_even_on_error(monkeypatch):
+    monkeypatch.setattr(extraction, "safe_chat_completion", lambda **kwargs: _fake_response("nope"))
+    files = [(_png_bytes(), "bad.png")]
+
+    calls = []
+    _, errors = extraction.extract_names_from_images(
+        files, on_progress=lambda completed, total, filename: calls.append((completed, total, filename))
+    )
+
+    assert calls == [(1, 1, "bad.png")]
+    assert len(errors) == 1

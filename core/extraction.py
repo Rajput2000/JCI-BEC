@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import logging
+from collections.abc import Callable
 
 from PIL import Image, UnidentifiedImageError
 
@@ -105,16 +106,25 @@ def extract_names_from_image(file_bytes: bytes, filename: str) -> tuple[list[str
 
 def extract_names_from_images(
     files: list[tuple[bytes, str]],
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Sequential (not concurrent, to respect Groq RPM limits) extraction
-    across multiple uploaded files. Returns (all_names, [(filename, error)])."""
+    across multiple uploaded files. Returns (all_names, [(filename, error)]).
+
+    If given, on_progress(completed_count, total_count, filename) is called
+    right after each image finishes (success or failure), so a caller like
+    the Streamlit UI can show live "N of M done" progress across a batch
+    instead of one opaque spinner for the whole thing."""
     all_names: list[str] = []
     errors: list[tuple[str, str]] = []
+    total = len(files)
 
-    for file_bytes, filename in files:
+    for completed, (file_bytes, filename) in enumerate(files, start=1):
         names, error = extract_names_from_image(file_bytes, filename)
         all_names.extend(names)
         if error:
             errors.append((filename, error))
+        if on_progress is not None:
+            on_progress(completed, total, filename)
 
     return all_names, errors
