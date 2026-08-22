@@ -1,6 +1,6 @@
 """Streamlit app: get attendee names either by uploading meeting-attendance
-screenshots (extracted with a Groq vision model) or by pasting a plain-text
-list, dedupe (code prefilter + Groq LLM), review/edit the list, then match
+screenshots (extracted with a Gemini vision model) or by pasting a plain-text
+list, dedupe (code prefilter + Gemini LLM), review/edit the list, then match
 against the standard member roster with the user's matching prompt and
 display the results.
 """
@@ -13,10 +13,15 @@ import streamlit as st
 from core.branding import FAVICON_PATH, inject_theme, render_header
 from core.dedupe import dedupe_names
 from core.extraction import extract_names_from_images
-from core.groq_client import GroqCallError
+from core.gemini_client import GeminiCallError
 from core.matching import run_matching
 from core.members import MembersLoadError, load_standard_members
-from core.parsing import MarkdownTableParseError, parse_markdown_table, to_display_rows
+from core.parsing import (
+    MarkdownTableParseError,
+    count_meeting_names,
+    parse_markdown_table,
+    to_display_rows,
+)
 from core.pasted_names import parse_pasted_names
 
 st.set_page_config(
@@ -185,15 +190,20 @@ if st.session_state.raw_names:
                 st.session_state.match_error = "No names to match."
             else:
                 parsed_rows = parse_markdown_table(raw_response)
-                if len(parsed_rows) != len(confirmed_names):
+                # Rows are expected to come back fewer than names sent — the
+                # prompt consolidates every meeting-name variant that maps to
+                # the same person into one row. So the real sanity check is
+                # against the total *names* across all rows, not row count.
+                returned_name_count = count_meeting_names(parsed_rows)
+                if returned_name_count != len(confirmed_names):
                     st.warning(
-                        f"Model returned {len(parsed_rows)} row(s) but "
-                        f"{len(confirmed_names)} name(s) were sent — please "
-                        "double-check the results below."
+                        f"Model's table accounts for {returned_name_count} "
+                        f"name(s) but {len(confirmed_names)} were sent — "
+                        "please double-check the results below."
                     )
                 st.session_state.match_rows = to_display_rows(parsed_rows)
                 st.session_state.match_error = None
-        except GroqCallError as exc:
+        except GeminiCallError as exc:
             st.session_state.match_rows = None
             st.session_state.match_error = str(exc)
         except MarkdownTableParseError as exc:
@@ -210,10 +220,13 @@ if st.session_state.match_error:
 if st.session_state.match_rows:
     st.header("4. Results")
     st.caption(
-        "Edit any cell to correct a wrong match. A [NO MATCH] in Matched "
-        "Standard Name means no roster name fit; Notes explains ambiguous picks."
+        "One row per matched person — Extracted Name(s) lists every meeting-list "
+        "variant that matched them (pipe-separated). A [NO MATCH] in Matched "
+        "Standard Name means no roster name fit; each unmatched name keeps its "
+        "own row. Match Certainty and Notes come straight from the model — "
+        "edit any cell to correct a wrong match."
     )
-    results_df = pd.DataFrame(st.session_state.match_rows).drop(columns=["Match"])
+    results_df = pd.DataFrame(st.session_state.match_rows)
 
     edited_results_df = st.data_editor(
         results_df,

@@ -6,10 +6,11 @@ import pytest
 from PIL import Image
 
 from core import extraction
+from core.gemini_client import GeminiCallError
 
 
-def _fake_response(content: str):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+def _fake_response(text, finish_reason="STOP"):
+    return SimpleNamespace(text=text, candidates=[SimpleNamespace(finish_reason=finish_reason)])
 
 
 def _png_bytes() -> bytes:
@@ -18,9 +19,10 @@ def _png_bytes() -> bytes:
     return buffer.getvalue()
 
 
-def test_encode_image_valid():
-    data_url = extraction.encode_image(_png_bytes())
-    assert data_url.startswith("data:image/jpeg;base64,")
+def test_encode_image_valid_returns_jpeg_bytes():
+    jpeg_bytes = extraction.encode_image(_png_bytes())
+    assert isinstance(jpeg_bytes, bytes)
+    assert jpeg_bytes[:2] == b"\xff\xd8"  # JPEG magic bytes
 
 
 def test_encode_image_invalid_bytes_raises():
@@ -31,7 +33,7 @@ def test_encode_image_invalid_bytes_raises():
 def test_extract_names_from_image_success(monkeypatch):
     monkeypatch.setattr(
         extraction,
-        "safe_chat_completion",
+        "safe_generate_content",
         lambda **kwargs: _fake_response(json.dumps({"names": ["John Doe", "Jane Smith"]})),
     )
     names, error = extraction.extract_names_from_image(_png_bytes(), "shot.png")
@@ -40,7 +42,9 @@ def test_extract_names_from_image_success(monkeypatch):
 
 
 def test_extract_names_from_image_bad_json(monkeypatch):
-    monkeypatch.setattr(extraction, "safe_chat_completion", lambda **kwargs: _fake_response("nope"))
+    # Defensive path — response_schema should make this rare in practice,
+    # but the code still guards against a malformed/empty result.
+    monkeypatch.setattr(extraction, "safe_generate_content", lambda **kwargs: _fake_response("nope"))
     names, error = extraction.extract_names_from_image(_png_bytes(), "shot.png")
     assert names == []
     assert error is not None and "shot.png" in error
@@ -52,10 +56,33 @@ def test_extract_names_from_image_bad_file():
     assert error is not None and "bad.png" in error
 
 
+def test_extract_names_from_image_empty_response_reports_finish_reason(monkeypatch):
+    # Reproduces the thinking-budget-exhaustion failure class: empty text,
+    # finish_reason explains why instead of a generic parse error.
+    monkeypatch.setattr(
+        extraction,
+        "safe_generate_content",
+        lambda **kwargs: _fake_response("", finish_reason="MAX_TOKENS"),
+    )
+    names, error = extraction.extract_names_from_image(_png_bytes(), "dense.jpeg")
+    assert names == []
+    assert error is not None and "MAX_TOKENS" in error
+
+
+def test_extract_names_from_image_reports_error_on_api_failure(monkeypatch):
+    def fake_call(**kwargs):
+        raise GeminiCallError("boom")
+
+    monkeypatch.setattr(extraction, "safe_generate_content", fake_call)
+    names, error = extraction.extract_names_from_image(_png_bytes(), "shot.jpeg")
+    assert names == []
+    assert error is not None and "shot.jpeg" in error
+
+
 def test_extract_names_from_images_aggregates(monkeypatch):
     monkeypatch.setattr(
         extraction,
-        "safe_chat_completion",
+        "safe_generate_content",
         lambda **kwargs: _fake_response(json.dumps({"names": ["A", "B"]})),
     )
     files = [(_png_bytes(), "one.png"), (_png_bytes(), "two.png")]
@@ -67,7 +94,7 @@ def test_extract_names_from_images_aggregates(monkeypatch):
 def test_extract_names_from_images_reports_progress(monkeypatch):
     monkeypatch.setattr(
         extraction,
-        "safe_chat_completion",
+        "safe_generate_content",
         lambda **kwargs: _fake_response(json.dumps({"names": ["A"]})),
     )
     files = [(_png_bytes(), "one.png"), (_png_bytes(), "two.png"), (_png_bytes(), "three.png")]
@@ -81,7 +108,7 @@ def test_extract_names_from_images_reports_progress(monkeypatch):
 
 
 def test_extract_names_from_images_progress_called_even_on_error(monkeypatch):
-    monkeypatch.setattr(extraction, "safe_chat_completion", lambda **kwargs: _fake_response("nope"))
+    monkeypatch.setattr(extraction, "safe_generate_content", lambda **kwargs: _fake_response("nope"))
     files = [(_png_bytes(), "bad.png")]
 
     calls = []

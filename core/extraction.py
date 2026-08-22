@@ -7,19 +7,19 @@ dedupe.py, and matching against the official roster lives in matching.py.
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import logging
 from collections.abc import Callable
 
+from google.genai import types
 from PIL import Image, UnidentifiedImageError
 
-from .groq_client import VISION_MODEL, GroqCallError, safe_chat_completion
+from .gemini_client import VISION_MODEL, GeminiCallError, safe_generate_content
 
 logger = logging.getLogger(__name__)
 
-_MAX_DIMENSION = 2000  # cap longest side so uploads stay well under Groq's limits
+_MAX_DIMENSION = 2000  # cap longest side so uploads stay well under API limits
 
 _EXTRACTION_SYSTEM_PROMPT = (
     "You are an OCR assistant. You will be shown a screenshot of a video "
@@ -29,18 +29,26 @@ _EXTRACTION_SYSTEM_PROMPT = (
     '"Participants (24)", buttons like "Mute All" or "Admit", timestamps, '
     "role labels, and UI chrome in general. If a name has a suffix like "
     '"(Host)" or "(Co-host)", strip the suffix and keep just the name.\n\n'
-    'Respond with ONLY a JSON object of the form {"names": ["Name One", '
-    '"Name Two"]}. If no names are visible, respond with {"names": []}. '
-    "Do not add any other text."
+    "If no names are visible, return an empty list."
 )
+
+_NAMES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "names": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["names"],
+}
 
 
 class ImageDecodeError(RuntimeError):
     """Raised when an uploaded file isn't a readable image."""
 
 
-def encode_image(file_bytes: bytes) -> str:
-    """Validate, downsize if needed, and return a data: URL for the image."""
+def encode_image(file_bytes: bytes) -> bytes:
+    """Validate and downsize if needed, returning re-encoded JPEG bytes
+    ready to hand straight to the Gemini SDK (which takes raw bytes, not a
+    base64 data URL)."""
     try:
         image = Image.open(io.BytesIO(file_bytes))
         image.load()
@@ -55,8 +63,7 @@ def encode_image(file_bytes: bytes) -> str:
 
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=90)
-    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/jpeg;base64,{encoded}"
+    return buffer.getvalue()
 
 
 def extract_names_from_image(file_bytes: bytes, filename: str) -> tuple[list[str], str | None]:
@@ -64,33 +71,43 @@ def extract_names_from_image(file_bytes: bytes, filename: str) -> tuple[list[str
     on failure names is [] and error_message describes what went wrong,
     letting callers skip a bad file without aborting the whole batch."""
     try:
-        data_url = encode_image(file_bytes)
+        jpeg_bytes = encode_image(file_bytes)
     except ImageDecodeError as exc:
         return [], f"{filename}: {exc}"
 
+    config = types.GenerateContentConfig(
+        system_instruction=_EXTRACTION_SYSTEM_PROMPT,
+        response_mime_type="application/json",
+        response_schema=_NAMES_SCHEMA,
+        temperature=0,
+        max_output_tokens=4096,
+        # A name-reading task doesn't need extended reasoning — disabling it
+        # avoids the "spends its whole budget thinking, returns nothing"
+        # failure mode that thinking-capable models (this one included) can
+        # hit on a complex enough prompt/image.
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    )
+
     try:
-        response = safe_chat_completion(
+        response = safe_generate_content(
             model=VISION_MODEL,
-            messages=[
-                {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Extract every attendee name from this screenshot.",
-                        },
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                },
+            contents=[
+                "Extract every attendee name from this screenshot.",
+                types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
             ],
-            response_format={"type": "json_object"},
-            temperature=0,
+            config=config,
         )
-    except GroqCallError as exc:
+    except GeminiCallError as exc:
         return [], f"{filename}: {exc}"
 
-    raw_content = response.choices[0].message.content
+    raw_content = response.text
+    if not raw_content or not raw_content.strip():
+        finish_reason = response.candidates[0].finish_reason if response.candidates else None
+        return [], (
+            f"{filename}: Gemini returned an empty response "
+            f"(finish_reason={finish_reason!r})"
+        )
+
     try:
         payload = json.loads(raw_content)
         names = payload.get("names", [])
@@ -100,16 +117,16 @@ def extract_names_from_image(file_bytes: bytes, filename: str) -> tuple[list[str
         logger.warning("Could not parse extraction response for %s: %s", filename, exc)
         return [], f"{filename}: model response wasn't valid JSON ({exc})"
 
-    cleaned = [str(n).strip() for n in names if str(n).strip()]
-    return cleaned, None
+    return [str(n).strip() for n in names if str(n).strip()], None
 
 
 def extract_names_from_images(
     files: list[tuple[bytes, str]],
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """Sequential (not concurrent, to respect Groq RPM limits) extraction
-    across multiple uploaded files. Returns (all_names, [(filename, error)]).
+    """Sequential (not concurrent, to stay well within rate limits)
+    extraction across multiple uploaded files. Returns (all_names,
+    [(filename, error)]).
 
     If given, on_progress(completed_count, total_count, filename) is called
     right after each image finishes (success or failure), so a caller like

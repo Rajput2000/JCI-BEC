@@ -1,17 +1,22 @@
-"""Parses the LLM's markdown table response into structured rows, and
-derives the Match Yes/No column ourselves rather than asking the LLM for it.
+"""Parses the LLM's markdown table response into structured rows.
 
-The matching prompt (prompts/matching_prompt.txt) always renders a 3-column
-table — Name in Meeting | Matched Standard Name | Notes — with Notes left
-blank except on ambiguous rows. The parser expects 3 cells per row but
-tolerates 2-cell rows defensively (treated as an empty Notes).
+The matching prompt (prompts/matching_prompt.txt) renders a 4-column table
+— Name(s) in Meeting | Matched Standard Name | Match Certainty | Notes —
+with one row per matched standard-list person: every meeting-name variant
+that maps to the same person is consolidated into that person's row
+(semicolon-separated in the first column — NOT pipe-separated, since `|` is
+markdown's own table-column delimiter and would corrupt the row), while
+unmatched names each keep their own row (never squashed together). Match
+Certainty (Exact/High/Medium/Low/No Match) comes straight from the model
+rather than being re-derived here, since it's strictly more informative
+than a plain Yes/No.
 """
 
 from __future__ import annotations
 
 import re
 
-_NO_MATCH_SENTINEL = "[no match]"
+_NAME_SPLIT_RE = re.compile(r"\s*;\s*")
 
 
 class MarkdownTableParseError(RuntimeError):
@@ -46,17 +51,19 @@ def parse_markdown_table(markdown_text: str) -> list[dict]:
         if len(cells) < 2:
             continue
 
-        name_in_meeting = cells[0]
+        names_in_meeting = cells[0]
         matched_standard_name = cells[1]
-        notes = cells[2] if len(cells) >= 3 else ""
+        match_certainty = cells[2] if len(cells) >= 3 else ""
+        notes = cells[3] if len(cells) >= 4 else ""
 
-        if not name_in_meeting:
+        if not names_in_meeting:
             continue
 
         rows.append(
             {
-                "name_in_meeting": name_in_meeting,
+                "names_in_meeting": names_in_meeting,
                 "matched_standard_name": matched_standard_name,
+                "match_certainty": match_certainty,
                 "notes": notes,
             }
         )
@@ -69,19 +76,27 @@ def parse_markdown_table(markdown_text: str) -> list[dict]:
     return rows
 
 
-def derive_match(matched_standard_name: str) -> str:
-    """Case/whitespace-tolerant check against the literal [NO MATCH]
-    sentinel, as a defensive measure against minor model formatting drift."""
-    normalized = matched_standard_name.strip().casefold()
-    return "No" if normalized == _NO_MATCH_SENTINEL else "Yes"
+def split_meeting_names(names_in_meeting: str) -> list[str]:
+    """Splits a possibly-consolidated 'Name(s) in Meeting' cell (semicolon-
+    separated when multiple raw meeting names matched the same person) back
+    into individual names."""
+    return [name for name in _NAME_SPLIT_RE.split(names_in_meeting) if name]
+
+
+def count_meeting_names(rows: list[dict]) -> int:
+    """Total individual meeting names across all rows, un-collapsing any
+    semicolon-separated consolidation. This — not len(rows) — is the right
+    count to sanity-check against the input list, since consolidation means
+    row count is *expected* to come out smaller than the number of names sent."""
+    return sum(len(split_meeting_names(row["names_in_meeting"])) for row in rows)
 
 
 def to_display_rows(parsed_rows: list[dict]) -> list[dict]:
     return [
         {
-            "Extracted Name": row["name_in_meeting"],
+            "Extracted Name(s)": row["names_in_meeting"],
             "Matched Standard Name": row["matched_standard_name"],
-            "Match": derive_match(row["matched_standard_name"]),
+            "Match Certainty": row["match_certainty"],
             "Notes": row["notes"],
         }
         for row in parsed_rows
