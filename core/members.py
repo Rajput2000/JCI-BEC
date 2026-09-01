@@ -1,15 +1,16 @@
 """Loads the Standard Member List.
 
-This is deliberately the one isolated seam for that data source. Today it
-reads a CSV — from Streamlit secrets when deployed (so the real roster never
-has to live in the git repo), or from a local file for local dev — and the
-user has flagged that it will later be sourced from a Google Form's
-responses instead. When that happens, only the body of
-`load_standard_members` needs to change — every call site stays the same.
+This is deliberately the one isolated seam for that data source. It now
+reads from Google Sheets first (the Member Directory tab -- see
+core/sheets_client.py), falling back to a CSV (Streamlit secrets, then a
+local file) when Sheets isn't configured -- the CSV path is kept as a
+documented local-dev fallback, not removed. When the source needs to
+change again, only the body of `load_standard_members` needs to change --
+every call site stays the same.
 
-Data is re-read fresh on every call (no caching) so that a swapped-in live
-source (CSV edited between runs, or eventually a form/sheet) is always
-reflected without needing a cache-clear step.
+Data is re-read fresh on every call (no caching) so a swapped-in live
+source (the sheet edited between runs) is always reflected without needing
+a cache-clear step.
 """
 
 from __future__ import annotations
@@ -21,11 +22,62 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+from . import sheets_client
+from .sheets_client import SheetsError
+
 DEFAULT_CSV_PATH = os.getenv("STANDARD_MEMBERS_CSV_PATH", "data/standard_members.csv")
+
+# Member Directory's real column names (confirmed via live read): Member
+# Code, Member Name, Location, Family Unit.
+_DIRECTORY_NAME_COL = "Member Name"
+_DIRECTORY_LOCATION_COL = "Location"
+_DIRECTORY_FAMILY_UNIT_COL = "Family Unit"
 
 
 class MembersLoadError(RuntimeError):
     """Raised when the Standard Member List can't be loaded or is empty."""
+
+
+def _read_from_sheets() -> pd.DataFrame | None:
+    """Primary source: the Member Directory tab's Member Name column,
+    renamed to 'name' for compatibility with the dedup/clean loop below.
+    Returns None (never raises) if Sheets isn't configured/reachable, so
+    load_standard_members() falls through to the existing secrets/file CSV
+    chain -- same "try new source, fall back to old" shape as that chain
+    already has."""
+    try:
+        records = sheets_client.read_all_records(sheets_client.MEMBER_DIRECTORY_TAB)
+    except SheetsError:
+        return None
+    if not records or _DIRECTORY_NAME_COL not in records[0]:
+        return None
+    return pd.DataFrame(records).rename(columns={_DIRECTORY_NAME_COL: "name"})
+
+
+def load_member_directory_records() -> list[dict]:
+    """Full Member Directory rows (Member Name, Location, Family Unit) for
+    the Step 5 Location/Family Unit lookup. Sheets-only, no CSV fallback --
+    Location/Family Unit don't exist in the legacy CSV format, so Step 5
+    inherently requires Sheets to be configured. Raises MembersLoadError
+    (not SheetsError) so callers only need the one except-clause shape this
+    module already uses everywhere else."""
+    try:
+        records = sheets_client.read_all_records(sheets_client.MEMBER_DIRECTORY_TAB)
+    except SheetsError as exc:
+        raise MembersLoadError(f"Could not load Member Directory from Google Sheets: {exc}") from exc
+
+    if not records:
+        raise MembersLoadError("Member Directory tab is empty.")
+
+    missing = [
+        c for c in (_DIRECTORY_NAME_COL, _DIRECTORY_LOCATION_COL, _DIRECTORY_FAMILY_UNIT_COL)
+        if c not in records[0]
+    ]
+    if missing:
+        raise MembersLoadError(
+            f"Member Directory is missing column(s) {missing}. Found: {list(records[0].keys())}"
+        )
+    return records
 
 
 def _read_from_secrets() -> pd.DataFrame | None:
@@ -55,11 +107,14 @@ def _read_from_file(path: Path) -> pd.DataFrame:
 
 
 def load_standard_members(path: str | Path = DEFAULT_CSV_PATH) -> list[str]:
-    df = _read_from_secrets()
-    source = "Streamlit secrets"
+    df = _read_from_sheets()
+    source = "Google Sheets (Member Directory)"
     if df is None:
-        df = _read_from_file(Path(path))
-        source = str(path)
+        df = _read_from_secrets()
+        source = "Streamlit secrets"
+        if df is None:
+            df = _read_from_file(Path(path))
+            source = str(path)
 
     if "name" not in df.columns:
         raise MembersLoadError(f"Expected a 'name' column in {source}, found: {list(df.columns)}")

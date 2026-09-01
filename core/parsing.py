@@ -18,6 +18,17 @@ import re
 
 _NAME_SPLIT_RE = re.compile(r"\s*;\s*")
 
+NO_MATCH_SENTINEL = "[NO MATCH]"
+
+
+def is_no_match(matched_standard_name: str) -> bool:
+    """Case/whitespace-tolerant check for the [NO MATCH] sentinel. Tolerant
+    because by the time this is checked (e.g. before posting attendance),
+    the value has passed through an editable st.data_editor -- the model
+    always emits the exact literal, but a hand edit could introduce stray
+    whitespace or casing drift."""
+    return str(matched_standard_name).strip().casefold() == NO_MATCH_SENTINEL.casefold()
+
 
 class MarkdownTableParseError(RuntimeError):
     """Raised when no table-like block can be found in the model's response."""

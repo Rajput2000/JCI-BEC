@@ -14,3 +14,8 @@ data/standard_members.csv
 # On Streamlit Community Cloud, secrets are pasted into the dashboard's
 # Settings -> Secrets UI instead — see .streamlit/secrets.toml.example.
 .streamlit/secrets.toml
+
+# Local Google service-account key (Sheets access) — never commit.
+# On Streamlit Community Cloud this goes in secrets under
+# [gcp_service_account] instead — see .streamlit/secrets.toml.example.
+service_account.json

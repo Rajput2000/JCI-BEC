@@ -2,7 +2,8 @@
 
 Upload meeting-attendance screenshots, extract attendee names with a Gemini
 vision model, deduplicate them, then match them against the standard member
-roster using a matching prompt — all reviewed in a Streamlit table.
+roster using a matching prompt — all reviewed in a Streamlit table. Matched
+attendance can then be posted straight into a Google Sheet attendance log.
 
 ## Pipeline
 
@@ -14,28 +15,40 @@ roster using a matching prompt — all reviewed in a Streamlit table.
    (OCR noise, inconsistent spacing) — but never nickname/initials
    consolidation, which stays with the matching step.
 4. You review/edit the deduplicated list before matching runs.
-5. The standard member list is loaded from `data/standard_members.csv`.
+5. The standard member list is loaded from Google Sheets (the Member
+   Directory tab), falling back to a local CSV if Sheets isn't configured.
 6. The matching prompt (`prompts/matching_prompt.txt`, kept verbatim) is run
    against the Gemini text model, producing a markdown table — one row per
    matched person (every meeting-name variant that maps to them consolidated
    into that row), with a Match Certainty tier and Notes, or `[NO MATCH]`.
 7. Results are displayed as Extracted Name(s) / Matched Standard Name /
    Match Certainty / Notes, editable, and can be downloaded as CSV.
+8. **Post attendance to Google Sheets** (only shown if Sheets is
+   configured): pick an Activity (from the Activity Catalog tab) and a
+   Month, click **Preview** to build the rows that would be appended
+   (Member Name, Location, Activity, Point, Quantity, Total Point, Month,
+   Family Unit — `[NO MATCH]` rows are always skipped), review them, then
+   **Publish to Sheet** to actually append them to the Raw Data tab.
+   Changing the Activity/Month or editing the Results table after
+   previewing disables Publish until you preview again.
 
 ## Project layout
 
 ```
-app.py              # Streamlit entry point (run this with `streamlit run`)
-core/                # supporting library code
-├── gemini_client.py  # Gemini client, model config, retry/error handling
-├── members.py         # loads data/standard_members.csv (CSV→Form seam)
-├── extraction.py       # vision extraction from screenshots
-├── dedupe.py            # prefilter + LLM-based dedup
-├── matching.py           # matching prompt + Gemini call
-└── parsing.py             # markdown table → structured rows
+app.py                  # Streamlit entry point (run this with `streamlit run`)
+core/                    # supporting library code
+├── gemini_client.py      # Gemini client, model config, retry/error handling
+├── sheets_client.py       # Google Sheets client, credentials, retry/error handling
+├── members.py              # loads the roster (Sheets→CSV fallback seam)
+├── activity_catalog.py      # loads the Activity Catalog tab
+├── records.py                 # pure row-building logic for posting attendance
+├── extraction.py               # vision extraction from screenshots
+├── dedupe.py                    # prefilter + LLM-based dedup
+├── matching.py                   # matching prompt + Gemini call
+└── parsing.py                     # markdown table → structured rows
 prompts/             # LLM prompt templates (matching_prompt.txt, dedupe_prompt.txt)
-data/                # data/standard_members.csv
-tests/               # pytest suite, mocks the Gemini client
+data/                # data/standard_members.csv (local-dev fallback roster)
+tests/               # pytest suite, mocks the Gemini/Sheets clients
 ```
 
 ## Setup
@@ -43,6 +56,13 @@ tests/               # pytest suite, mocks the Gemini client
 ```bash
 pip install -r requirements.txt
 cp .env.example .env   # then fill in GEMINI_API_KEY (get one at https://aistudio.google.com/apikey)
+```
+
+The roster comes from Google Sheets — see "Google Sheets setup" below to
+configure `GOOGLE_SHEET_ID` and a service account. Without that configured,
+the app falls back to a local CSV:
+
+```bash
 cp data/standard_members.example.csv data/standard_members.csv   # then fill in real names
 ```
 
@@ -90,6 +110,45 @@ The real roster's contents only ever exist in: your local machine, and the
 Streamlit Cloud dashboard's secrets store (which itself never appears in
 your git history, your repo, or any diff).
 
+## Google Sheets setup
+
+Powers both the roster (Member Directory) and "Post attendance to Google
+Sheets" (Step 5). One spreadsheet, three tabs, addressed strictly by exact
+name (`SHEETS_MEMBER_DIRECTORY_TAB` / `SHEETS_ACTIVITY_CATALOG_TAB` /
+`SHEETS_RAW_DATA_TAB` env vars if you ever need to override the defaults
+below):
+
+- **Member Directory** — columns `Member Name`, `Location`, `Family Unit`
+  (plus anything else you like, e.g. `Member Code` — extra columns are
+  ignored). This is the roster.
+- **Activity Catalog** — columns `Activity Name`, `Points`. Populates the
+  Step 5 Activity dropdown and its point value.
+- **Raw Data** — the attendance log, with its header row already in place:
+  `Member Name | Location | Activity | Point | Quantity | Total Point |
+  Month | Family Unit`. New rows are appended after the last existing row —
+  the header and existing rows are never touched, and never re-fetched by
+  header text (rows are written by column position).
+
+Setup:
+
+1. In [Google Cloud Console](https://console.cloud.google.com), enable the
+   Google Sheets API and create a **service account** (APIs & Services →
+   Credentials → Create Credentials → Service Account). Create a JSON key
+   for it (Keys tab → Add Key → Create new key → JSON) and download it.
+2. **Share the spreadsheet** with that key's `client_email` as **Editor** —
+   easy to forget, and without it every Sheets call fails with a permission
+   error no matter how correct the credentials are.
+3. Grab the spreadsheet ID from its URL:
+   `https://docs.google.com/spreadsheets/d/THIS_PART/edit`.
+4. Local dev: save the downloaded key as `service_account.json` at the repo
+   root (gitignored — never commit it) and set `GOOGLE_SHEET_ID` in `.env`.
+   Streamlit Cloud: paste the key's contents into a `[gcp_service_account]`
+   secrets block and set `GOOGLE_SHEET_ID` as a top-level secret (see
+   `.streamlit/secrets.toml.example`).
+
+If Sheets isn't configured, the roster falls back to the CSV described
+above, and Step 5 shows an info message instead of the posting UI.
+
 ## Configuration
 
 All of these are optional overrides — see `.env.example`:
@@ -102,15 +161,18 @@ All of these are optional overrides — see `.env.example`:
   these only need to differ if you want a cheaper/faster model for one step.
 - `STANDARD_MEMBERS_CSV_PATH` — defaults to `data/standard_members.csv`.
   Set this to an absolute path outside the repo if you'd rather the real
-  roster not live in the project folder at all.
+  roster not live in the project folder at all. Only used as a fallback
+  when Google Sheets isn't configured.
+- `GOOGLE_SHEET_ID` / `GOOGLE_SERVICE_ACCOUNT_JSON_PATH` — see "Google
+  Sheets setup" above.
 
 ## Swapping the standard member list source
 
 `core.members.load_standard_members()` is the single seam for this data. It
-currently reads a CSV — from Streamlit secrets if set, else from a local
-file — re-read fresh on every app run. When this needs to come from Google
-Form responses instead, only the body of that function needs to change —
-every caller (`app.py`) stays the same.
+reads Google Sheets first (Member Directory tab), falling back to Streamlit
+secrets, then a local CSV file when Sheets isn't configured — re-read fresh
+on every app run. If the source needs to change again, only the body of
+that function needs to change — every caller (`app.py`) stays the same.
 
 ## Tests
 
@@ -118,8 +180,8 @@ every caller (`app.py`) stays the same.
 pytest
 ```
 
-Unit tests mock the Gemini client, so they don't require an API key or make
-network calls.
+Unit tests mock the Gemini and Sheets clients, so they don't require an API
+key/credentials or make network calls.
 
 ## Known limitations
 
@@ -138,6 +200,11 @@ network calls.
   try again or split the batch smaller.
 - If a matching run's row count doesn't account for the number of names
   sent, the app shows a warning — check the table carefully in that case.
+- Google Sheets/service-account failures (missing tab, not shared with the
+  service account, malformed headers, rate limiting) surface as a clear
+  error rather than a silent failure. `append_rows`' "append after the last
+  row" relies on the Raw Data tab having no blank rows interspersed in its
+  existing data.
 
 ## Why Gemini, not Groq
 

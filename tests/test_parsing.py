@@ -3,6 +3,7 @@ import pytest
 from core.parsing import (
     MarkdownTableParseError,
     count_meeting_names,
+    is_no_match,
     parse_markdown_table,
     split_meeting_names,
     to_display_rows,
@@ -104,3 +105,17 @@ def test_to_display_rows_shape():
         "Match Certainty",
         "Notes",
     }
+
+
+def test_is_no_match_exact():
+    assert is_no_match("[NO MATCH]") is True
+
+
+def test_is_no_match_case_and_whitespace_tolerant():
+    assert is_no_match("  [no match] ") is True
+    assert is_no_match("[No Match]") is True
+
+
+def test_is_no_match_false_for_real_name():
+    assert is_no_match("Ada Lovelace") is False
+    assert is_no_match("") is False

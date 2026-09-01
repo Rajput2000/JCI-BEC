@@ -10,12 +10,18 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from core.activity_catalog import (
+    ActivityCatalogError,
+    get_activity_options,
+    get_point_value,
+    load_activity_catalog,
+)
 from core.branding import FAVICON_PATH, inject_theme, render_header
 from core.dedupe import dedupe_names
 from core.extraction import extract_names_from_images
 from core.gemini_client import GeminiCallError
 from core.matching import run_matching
-from core.members import MembersLoadError, load_standard_members
+from core.members import MembersLoadError, load_member_directory_records, load_standard_members
 from core.parsing import (
     MarkdownTableParseError,
     count_meeting_names,
@@ -23,6 +29,8 @@ from core.parsing import (
     to_display_rows,
 )
 from core.pasted_names import parse_pasted_names
+from core.records import MONTH_OPTIONS, build_attendance_rows, build_member_lookup
+from core.sheets_client import SheetsError, append_attendance_rows, is_configured as sheets_configured
 
 st.set_page_config(
     page_title="JCI-BEC Attendance Matcher",
@@ -44,9 +52,27 @@ for key, default in [
     ("match_rows", None),
     ("match_error", None),
     ("input_reset_counter", 0),
+    ("attendance_rows", None),
+    ("attendance_skip_warnings", None),
+    ("attendance_preview_signature", None),
+    ("attendance_preview_error", None),
+    ("attendance_publish_error", None),
+    ("attendance_publish_success", None),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+
+def _reset_attendance_state() -> None:
+    """Invalidates any previewed/publishable attendance state — called
+    whenever the Results table it's built from could be stale (new names,
+    Clear All, or a fresh Run Matching)."""
+    st.session_state.attendance_rows = None
+    st.session_state.attendance_skip_warnings = None
+    st.session_state.attendance_preview_signature = None
+    st.session_state.attendance_preview_error = None
+    st.session_state.attendance_publish_error = None
+    st.session_state.attendance_publish_success = None
 
 
 def _reset_downstream_state() -> None:
@@ -57,6 +83,18 @@ def _reset_downstream_state() -> None:
     st.session_state.dedupe_warning = None
     st.session_state.match_rows = None
     st.session_state.match_error = None
+    _reset_attendance_state()
+
+
+def _attendance_signature(activity: str, month: str, results_df: pd.DataFrame) -> tuple:
+    """Snapshot of everything a Step 5 preview depends on — used to detect
+    when it's gone stale (Activity/Month changed, or the Results table was
+    hand-edited) since the last Preview click."""
+    rows = tuple(
+        (str(r.get("Extracted Name(s)", "")), str(r.get("Matched Standard Name", "")))
+        for r in results_df.to_dict("records")
+    )
+    return (activity, month, rows)
 
 
 def _clear_all() -> None:
@@ -182,6 +220,7 @@ if st.session_state.raw_names:
     st.caption(f"Loaded {len(standard_list)} standard member name(s).")
 
     if st.button("Run Matching", disabled=not confirmed_names, type="primary"):
+        _reset_attendance_state()
         try:
             with st.spinner("Matching names..."):
                 raw_response = run_matching(standard_list, confirmed_names)
@@ -241,3 +280,109 @@ if st.session_state.match_rows:
         file_name="attendance_match_results.csv",
         mime="text/csv",
     )
+
+
+# --- Step 5: post attendance to Google Sheets -----------------------------
+if st.session_state.match_rows:
+    st.header("5. Post attendance to Google Sheets")
+
+    if not sheets_configured():
+        st.info(
+            "Google Sheets isn't configured, so this step is unavailable. "
+            "Set GOOGLE_SHEET_ID and a service-account credential (see "
+            ".env.example / README) to enable posting attendance."
+        )
+    else:
+        st.caption(
+            "Pick the Activity and Month, Preview the rows that would be "
+            "appended to the Raw Data tab, then Publish. Rows still marked "
+            "[NO MATCH] in the Results table above are always skipped."
+        )
+
+        try:
+            catalog_records = load_activity_catalog()
+        except ActivityCatalogError as exc:
+            st.error(f"Could not load the Activity Catalog: {exc}")
+            st.stop()
+
+        activity_col, month_col = st.columns(2)
+        with activity_col:
+            selected_activity = st.selectbox(
+                "Activity", get_activity_options(catalog_records), key="attendance_activity"
+            )
+        with month_col:
+            selected_month = st.selectbox("Month", MONTH_OPTIONS, key="attendance_month")
+
+        if st.button("Preview", type="secondary"):
+            try:
+                point_value = get_point_value(catalog_records, selected_activity)
+                directory_records = load_member_directory_records()
+                member_lookup = build_member_lookup(directory_records)
+                result = build_attendance_rows(
+                    edited_results_df.to_dict("records"),
+                    member_lookup,
+                    activity=selected_activity,
+                    point_value=point_value,
+                    month=selected_month,
+                )
+                st.session_state.attendance_rows = result.rows
+
+                warnings = []
+                if result.skipped_no_match:
+                    warnings.append(f"{result.skipped_no_match} row(s) skipped ([NO MATCH]).")
+                if result.skipped_not_found:
+                    warnings.append(
+                        "Not found in Member Directory, skipped: "
+                        + ", ".join(result.skipped_not_found)
+                    )
+                st.session_state.attendance_skip_warnings = warnings
+                st.session_state.attendance_preview_signature = _attendance_signature(
+                    selected_activity, selected_month, edited_results_df
+                )
+                st.session_state.attendance_preview_error = None
+                st.session_state.attendance_publish_success = None
+            except (MembersLoadError, ActivityCatalogError, SheetsError) as exc:
+                st.session_state.attendance_rows = None
+                st.session_state.attendance_preview_error = str(exc)
+
+        if st.session_state.attendance_preview_error:
+            st.error(st.session_state.attendance_preview_error)
+
+        if st.session_state.attendance_rows is not None:
+            for warning in st.session_state.attendance_skip_warnings or []:
+                st.warning(warning)
+
+            if st.session_state.attendance_rows:
+                st.dataframe(pd.DataFrame(st.session_state.attendance_rows), use_container_width=True)
+            else:
+                st.info("Nothing to publish — every row was [NO MATCH] or not found in the directory.")
+
+            current_signature = _attendance_signature(selected_activity, selected_month, edited_results_df)
+            is_stale = current_signature != st.session_state.attendance_preview_signature
+            if is_stale:
+                st.info(
+                    "Activity, Month, or the Results table changed since the "
+                    "last Preview — click Preview again before publishing."
+                )
+
+            if st.button(
+                "Publish to Sheet",
+                type="primary",
+                disabled=is_stale or not st.session_state.attendance_rows,
+            ):
+                try:
+                    appended = append_attendance_rows(st.session_state.attendance_rows)
+                    st.session_state.attendance_publish_success = (
+                        f"Appended {appended} row(s) to Raw Data for "
+                        f"{selected_activity} / {selected_month}."
+                    )
+                    st.session_state.attendance_publish_error = None
+                    st.session_state.attendance_rows = None
+                    st.session_state.attendance_preview_signature = None
+                except SheetsError as exc:
+                    st.session_state.attendance_publish_error = str(exc)
+
+        if st.session_state.attendance_publish_error:
+            st.error(st.session_state.attendance_publish_error)
+        if st.session_state.attendance_publish_success:
+            st.success(st.session_state.attendance_publish_success)
