@@ -11,7 +11,8 @@ from .llm_types import LLMCallError, LLMRequest, LLMResult
 
 logger = logging.getLogger(__name__)
 
-_FALLBACK_NOTICE = "Gemini is unavailable — using the backup model. This step may take 1–2 minutes."
+_FALLBACK_NOTICE = "Gemini is unavailable ({reason}) — using the backup model. This step may take 1–2 minutes."
+_MAX_REASON_LENGTH = 160
 
 
 def _require_text(result: LLMResult) -> LLMResult:
@@ -24,9 +25,15 @@ def _require_text(result: LLMResult) -> LLMResult:
     )
 
 
-def _notify_fallback() -> None:
+def summarize_error(error: Exception) -> str:
+    """First line of the error without the raw JSON body Gemini appends, so it fits in a toast."""
+    summary = str(error).split("{", 1)[0].strip().rstrip(".")
+    return summary[:_MAX_REASON_LENGTH] or type(error).__name__
+
+
+def _notify_fallback(reason: str) -> None:
     try:
-        st.toast(_FALLBACK_NOTICE)
+        st.toast(_FALLBACK_NOTICE.format(reason=reason))
     except Exception:  # no Streamlit session (e.g. tests or scripts): the log line is enough
         pass
 
@@ -40,7 +47,7 @@ def generate(request: LLMRequest) -> LLMResult:
         if not openrouter_client.is_configured():
             raise
         logger.warning("llm_fallback_triggered: task=%s reason=%s", request.task, primary_error)
-        _notify_fallback()
+        _notify_fallback(summarize_error(primary_error))
         try:
             result = _require_text(openrouter_client.generate(request))
         except LLMCallError as fallback_error:

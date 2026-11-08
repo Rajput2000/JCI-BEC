@@ -24,8 +24,8 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 PROVIDER_NAME = "gemini"
-VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash")
-TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-2.5-flash")
+VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3.8-flash")
+TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.8-flash")
 # Without a timeout a hung call never fails, so the fallback provider never gets a chance.
 _TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "120"))
 

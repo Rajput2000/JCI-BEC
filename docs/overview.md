@@ -31,7 +31,7 @@ the source on Streamlit Cloud. See `.env.example` and
 | Variable | Default | Purpose |
 |---|---|---|
 | `GEMINI_API_KEY` | — (required) | Gemini key |
-| `GEMINI_VISION_MODEL` / `GEMINI_TEXT_MODEL` | `gemini-2.5-flash` | Model per task |
+| `GEMINI_VISION_MODEL` / `GEMINI_TEXT_MODEL` | `gemini-3.8-flash` | Model per task |
 | `GEMINI_TIMEOUT_SECONDS` | `120` | Per-call timeout; a timeout triggers the fallback |
 | `OPENROUTER_API_KEY` | unset (fallback off) | Enables the OpenRouter fallback |
 | `OPENROUTER_MODELS` | `dots-studio/dots-3-note-preview:free` | Comma-separated, tried in order |

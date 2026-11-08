@@ -83,6 +83,15 @@ def test_raises_combined_error_when_both_providers_fail(monkeypatch):
     assert "backup down" in str(exc_info.value)
 
 
+def test_summarize_error_drops_raw_json_body():
+    error = LLMCallError("Gemini API call failed: 402 RESOURCE_EXHAUSTED. {'error': {'code': 402}}")
+    assert llm_client.summarize_error(error) == "Gemini API call failed: 402 RESOURCE_EXHAUSTED"
+
+
+def test_summarize_error_truncates_long_messages():
+    assert len(llm_client.summarize_error(LLMCallError("x" * 500))) == llm_client._MAX_REASON_LENGTH
+
+
 def test_raises_when_fallback_returns_empty_text(monkeypatch):
     monkeypatch.setattr(llm_client.openrouter_client, "is_configured", lambda: True)
     monkeypatch.setattr(llm_client.gemini_client, "generate", _raise("gemini down"))

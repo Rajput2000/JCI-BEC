@@ -2,6 +2,25 @@
 
 Newest first.
 
+## 2026-11-08 — Default Gemini model changed to `gemini-3.8-flash`
+
+**Decision:** `GEMINI_VISION_MODEL` and `GEMINI_TEXT_MODEL` now default to
+`gemini-3.8-flash`.
+
+**Why:** Gemini started rejecting `gemini-2.5-flash` with `404 NOT_FOUND:
+no longer available to new users`, so every call fell back to OpenRouter.
+`gemini-3.8-flash` is the replacement Google's error names, and it is listed
+for this key. Tested with synthetic data and the app's real request settings
+(including `thinking_budget=0`): vision 12/12 names exact (5.6s), dedup 30/30
+(3.7s), matching 62/62 names (6.3s).
+
+**Alternatives considered:** `gemini-flash-latest` (an alias that would
+change model without notice; rejected for predictable output), or
+`gemini-3.5-flash` / `gemini-3.7-flash` (older; not tested).
+
+**Consequences:** any deployment whose secrets still set
+`GEMINI_*_MODEL = "gemini-2.5-flash"` must update them, or it keeps falling back.
+
 ## 2026-11-08 — Add OpenRouter as the fallback LLM provider
 
 **Decision:** Every LLM call goes to Gemini first. On any failure (API error,

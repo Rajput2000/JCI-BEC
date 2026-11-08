@@ -59,8 +59,10 @@ disables Publish until the user previews again.
 ### AI provider fallback
 Every LLM call (extraction, dedup, matching) goes to Gemini first. If
 Gemini fails, the same request is sent to OpenRouter, and the user sees a
-toast: "Gemini is unavailable — using the backup model. This step may take
-1–2 minutes." The fallback is enabled only when `OPENROUTER_API_KEY` is set.
+toast that names the Gemini error, for example: "Gemini is unavailable
+(Gemini API call failed: 404 NOT_FOUND) — using the backup model. This step
+may take 1–2 minutes." The fallback is enabled only when
+`OPENROUTER_API_KEY` is set.
 
 ## Flows
 
@@ -127,7 +129,7 @@ Decision rules:
   measured, and it can be withdrawn without notice.
 - Free OpenRouter models may log prompts; this app sends member names and
   screenshots. Keep "allow training" off in OpenRouter's privacy settings.
-- The UI shows only a toast when the fallback is used; results aren't
+- The UI shows only a toast (with the Gemini error) when the fallback is used; results aren't
   labeled with the provider that produced them.
 - Gemini's 429 retry waits at most ~6s, so a longer rate-limit window goes
   straight to the fallback.
