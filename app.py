@@ -1,8 +1,6 @@
-"""Streamlit app: get attendee names either by uploading meeting-attendance
-screenshots (extracted with a Gemini vision model) or by pasting a plain-text
-list, dedupe (code prefilter + Gemini LLM), review/edit the list, then match
-against the standard member roster with the user's matching prompt and
-display the results.
+"""Streamlit app: get attendee names from meeting screenshots (vision LLM) or a
+pasted list, dedupe them, review/edit, match against the standard roster, and
+post attendance to Google Sheets. LLM calls go to Gemini, falling back to OpenRouter.
 """
 
 from __future__ import annotations
@@ -19,7 +17,7 @@ from core.activity_catalog import (
 from core.branding import FAVICON_PATH, inject_theme, render_header
 from core.dedupe import dedupe_names
 from core.extraction import extract_names_from_images
-from core.gemini_client import GeminiCallError
+from core.llm_types import LLMCallError
 from core.matching import run_matching
 from core.members import MembersLoadError, load_member_directory_records, load_standard_members
 from core.parsing import (
@@ -242,7 +240,7 @@ if st.session_state.raw_names:
                     )
                 st.session_state.match_rows = to_display_rows(parsed_rows)
                 st.session_state.match_error = None
-        except GeminiCallError as exc:
+        except LLMCallError as exc:
             st.session_state.match_rows = None
             st.session_state.match_error = str(exc)
         except MarkdownTableParseError as exc:

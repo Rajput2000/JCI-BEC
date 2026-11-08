@@ -1,7 +1,7 @@
 # JCI-BEC Attendance Matcher
 
 Upload meeting-attendance screenshots, extract attendee names with a Gemini
-vision model, deduplicate them, then match them against the standard member
+vision model (falling back to OpenRouter if Gemini fails), deduplicate them, then match them against the standard member
 roster using a matching prompt — all reviewed in a Streamlit table. Matched
 attendance can then be posted straight into a Google Sheet attendance log.
 
@@ -37,18 +37,22 @@ attendance can then be posted straight into a Google Sheet attendance log.
 ```
 app.py                  # Streamlit entry point (run this with `streamlit run`)
 core/                    # supporting library code
-├── gemini_client.py      # Gemini client, model config, retry/error handling
+├── llm_client.py         # single LLM entry point: Gemini first, OpenRouter fallback
+├── llm_types.py          # LLMRequest / LLMResult / LLMCallError shared by the adapters
+├── gemini_client.py      # Gemini adapter: model config, timeout, 429 retry
+├── openrouter_client.py  # OpenRouter fallback adapter (OpenAI-compatible API)
+├── settings.py           # env-then-Streamlit-secrets config lookup
 ├── sheets_client.py       # Google Sheets client, credentials, retry/error handling
 ├── members.py              # loads the roster (Sheets→CSV fallback seam)
 ├── activity_catalog.py      # loads the Activity Catalog tab
 ├── records.py                 # pure row-building logic for posting attendance
 ├── extraction.py               # vision extraction from screenshots
 ├── dedupe.py                    # prefilter + LLM-based dedup
-├── matching.py                   # matching prompt + Gemini call
+├── matching.py                   # matching prompt + LLM call
 └── parsing.py                     # markdown table → structured rows
 prompts/             # LLM prompt templates (matching_prompt.txt, dedupe_prompt.txt)
 data/                # data/standard_members.csv (local-dev fallback roster)
-tests/               # pytest suite, mocks the Gemini/Sheets clients
+tests/               # pytest suite, mocks the LLM/Sheets clients
 ```
 
 ## Setup
@@ -159,6 +163,18 @@ All of these are optional overrides — see `.env.example`:
   instead of editing code. Check <https://ai.google.dev/gemini-api/docs/models>.
   Gemini models are natively multimodal, so both default to the same model —
   these only need to differ if you want a cheaper/faster model for one step.
+- `GEMINI_TIMEOUT_SECONDS` — per-call timeout (default 120). A call that
+  times out counts as a failure and goes to the fallback.
+- `OPENROUTER_API_KEY` — optional. Enables the fallback: when a Gemini call
+  fails (any error, timeout, missing key, or an empty response), the same
+  request is sent to OpenRouter. Get a key at <https://openrouter.ai/keys>,
+  and turn off "allow training on prompts" in its privacy settings.
+- `OPENROUTER_MODELS` — comma-separated list, tried in order (default
+  `dots-studio/dots-3-note-preview:free`). Free models can be withdrawn
+  without notice; pick ones that accept images and aren't hosted on Google
+  AI Studio (those share Gemini's outages). See
+  <https://openrouter.ai/models?q=free>.
+- `OPENROUTER_TIMEOUT_SECONDS` — per-call timeout (default 240).
 - `STANDARD_MEMBERS_CSV_PATH` — defaults to `data/standard_members.csv`.
   Set this to an absolute path outside the repo if you'd rather the real
   roster not live in the project folder at all. Only used as a fallback
@@ -180,7 +196,7 @@ that function needs to change — every caller (`app.py`) stays the same.
 pytest
 ```
 
-Unit tests mock the Gemini and Sheets clients, so they don't require an API
+Unit tests mock the Gemini, OpenRouter and Sheets clients, so they don't require an API
 key/credentials or make network calls.
 
 ## Known limitations
@@ -198,6 +214,9 @@ key/credentials or make network calls.
   this, and any occurrence surfaces as a clear error naming the cause
   (`finish_reason`) rather than a silent empty result — but if you hit it,
   try again or split the batch smaller.
+- The OpenRouter fallback uses a free preview model by default: it can be
+  slower (10s–2min per call measured), may be withdrawn without notice, and
+  the app only shows a toast (not a per-result label) when it was used.
 - If a matching run's row count doesn't account for the number of names
   sent, the app shows a warning — check the table carefully in that case.
 - Google Sheets/service-account failures (missing tab, not shared with the
@@ -206,15 +225,10 @@ key/credentials or make network calls.
   row" relies on the Raw Data tab having no blank rows interspersed in its
   existing data.
 
-## Why Gemini, not Groq
+## Why Gemini, with OpenRouter as the fallback
 
-This app originally used Groq. It migrated to Gemini because Groq's
-free-tier rate limit for the models in use (8,000 tokens/minute, shared
-across prompt + output) was too tight for this workload — a 150+ name
-roster plus a full matching-table response routinely got close to or over
-that ceiling, and was the direct cause of a couple of real failures during
-development (a token-budget-exhaustion bug and a request-too-large error).
-Gemini's free tier has substantially more headroom for the same kind of
-work. If Groq's limits or lineup change and its speed advantage (LPU
-hardware) becomes worth it again, `core/gemini_client.py` is the single
-place that would need swapping back.
+Groq was dropped because its free tier's 8,000 tokens/minute cap was too
+tight for a 150+ name roster plus a full matching table. Gemini is the
+primary provider; OpenRouter is the fallback because its free models
+handle the full matching workload (~2k tokens in, ~11k out measured) and
+accept images. See `docs/decisions.md` for the full reasoning.

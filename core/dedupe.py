@@ -3,7 +3,7 @@
 Stage 1 (prefilter_dedupe): cheap, code-level, exact/case/whitespace
 duplicates only. No API call, no ambiguity.
 
-Stage 2 (run_dedupe_llm): a Gemini text-model call that catches near-
+Stage 2 (run_dedupe_llm): an LLM text call that catches near-
 duplicate *spellings* a plain normalize won't (OCR noise, inconsistent
 spacing, a one-character misread) across different screenshots of the same
 meeting.
@@ -22,9 +22,8 @@ import logging
 import re
 from pathlib import Path
 
-from google.genai import types
-
-from .gemini_client import TEXT_MODEL, GeminiCallError, safe_generate_content
+from .llm_client import generate
+from .llm_types import LLMCallError, LLMRequest
 
 logger = logging.getLogger(__name__)
 
@@ -68,35 +67,21 @@ def build_dedupe_prompt(names: list[str]) -> str:
     return template.format(name_list=name_list)
 
 
-def run_dedupe_llm(names: list[str], model: str = TEXT_MODEL) -> list[str]:
-    """Sends the prefiltered names to Gemini to merge remaining near-
-    duplicate spellings. Raises GeminiCallError on failure — callers should
-    catch this and fall back to the prefiltered list rather than hard-stop."""
+def run_dedupe_llm(names: list[str]) -> list[str]:
+    """Merges remaining near-duplicate spellings. Raises LLMCallError on failure;
+    callers should fall back to the prefiltered list rather than hard-stop."""
     if not names:
         return []
 
-    prompt = build_dedupe_prompt(names)
-    response = safe_generate_content(
-        model=model,
-        contents=[prompt],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_UNIQUE_NAMES_SCHEMA,
-            temperature=0,
-            max_output_tokens=4096,
-            # A dedup pass over a plain name list doesn't need extended
-            # reasoning; disabling it avoids the "burns its whole budget
-            # thinking, returns nothing" failure some prompts can trigger.
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
-        ),
+    request = LLMRequest(
+        task="text",
+        prompt=build_dedupe_prompt(names),
+        json_schema=_UNIQUE_NAMES_SCHEMA,
+        max_output_tokens=4096,
+        # Merging spellings needs no reasoning; thinking can eat the whole token budget.
+        thinking_budget=0,
     )
-
-    raw_content = response.text
-    if not raw_content or not raw_content.strip():
-        finish_reason = response.candidates[0].finish_reason if response.candidates else None
-        raise GeminiCallError(
-            f"Gemini returned an empty dedup response (finish_reason={finish_reason!r})"
-        )
+    raw_content = generate(request).text
 
     try:
         payload = json.loads(raw_content)
@@ -104,24 +89,24 @@ def run_dedupe_llm(names: list[str], model: str = TEXT_MODEL) -> list[str]:
         if not isinstance(unique_names, list):
             raise ValueError("'unique_names' was not a list")
     except (json.JSONDecodeError, ValueError) as exc:
-        raise GeminiCallError(f"Dedup response wasn't valid JSON: {exc}") from exc
+        raise LLMCallError(f"Dedup response wasn't valid JSON: {exc}") from exc
 
     cleaned = [str(n).strip() for n in unique_names if str(n).strip()]
     if not cleaned:
-        raise GeminiCallError("Dedup response contained no names.")
+        raise LLMCallError("Dedup response contained no names.")
     return cleaned
 
 
 def dedupe_names(names: list[str]) -> tuple[list[str], str | None]:
     """Orchestrates prefilter -> LLM dedup. Returns (deduped_names, warning).
-    warning is None on success; if the Gemini call fails, falls back to the
+    warning is None on success; if the LLM call fails, falls back to the
     prefiltered list and returns a warning message instead of raising, so
     one dedup-call failure doesn't hard-stop the whole pipeline."""
     prefiltered = prefilter_dedupe(names)
 
     try:
         return run_dedupe_llm(prefiltered), None
-    except GeminiCallError as exc:
+    except LLMCallError as exc:
         logger.warning("LLM dedup failed, falling back to prefiltered list: %s", exc)
         return prefiltered, (
             f"Could not run LLM-based dedup ({exc}); showing the "

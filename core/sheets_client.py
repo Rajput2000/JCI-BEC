@@ -4,7 +4,7 @@ this app reads/writes (Member Directory, Activity Catalog, Raw Data).
 
 This is the *only* module that imports gspread or google.oauth2 — every
 other module talks to Sheets through the functions here, so it's the one
-seam callers' tests need to mock. Mirrors core/gemini_client.py's shape:
+seam callers' tests need to mock. Same shape as core/gemini_client.py:
 env-var-first-then-st.secrets resolution, a cached client getter, and one
 uniform exception (SheetsError) instead of letting raw gspread/google-auth
 exceptions escape to callers.
@@ -75,7 +75,7 @@ def _resolve_credentials() -> Credentials | None:
 
 
 def _resolve_spreadsheet_id() -> str | None:
-    """Same env-then-secrets shape as gemini_client._resolve_api_key()."""
+    """Same env-then-secrets lookup as core.settings.resolve_setting()."""
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
     if sheet_id:
         return sheet_id
@@ -129,7 +129,7 @@ def get_spreadsheet() -> gspread.Spreadsheet:
 
 def _with_retry(fn, *args, **kwargs):
     """Retries once/twice on a 429 rate-limit response before giving up --
-    the same shape as gemini_client.safe_generate_content's retry, needed
+    the same shape as gemini_client.generate's retry, needed
     here too since a single Sheets API key can be shared across many tabs
     (this spreadsheet has 40+) and rate limits are per-project, not
     per-tab."""

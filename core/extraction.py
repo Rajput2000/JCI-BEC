@@ -12,10 +12,10 @@ import json
 import logging
 from collections.abc import Callable
 
-from google.genai import types
 from PIL import Image, UnidentifiedImageError
 
-from .gemini_client import VISION_MODEL, GeminiCallError, safe_generate_content
+from .llm_client import generate
+from .llm_types import LLMCallError, LLMRequest
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +46,7 @@ class ImageDecodeError(RuntimeError):
 
 
 def encode_image(file_bytes: bytes) -> bytes:
-    """Validate and downsize if needed, returning re-encoded JPEG bytes
-    ready to hand straight to the Gemini SDK (which takes raw bytes, not a
-    base64 data URL)."""
+    """Validate and downsize if needed, returning re-encoded JPEG bytes."""
     try:
         image = Image.open(io.BytesIO(file_bytes))
         image.load()
@@ -75,38 +73,21 @@ def extract_names_from_image(file_bytes: bytes, filename: str) -> tuple[list[str
     except ImageDecodeError as exc:
         return [], f"{filename}: {exc}"
 
-    config = types.GenerateContentConfig(
-        system_instruction=_EXTRACTION_SYSTEM_PROMPT,
-        response_mime_type="application/json",
-        response_schema=_NAMES_SCHEMA,
-        temperature=0,
+    request = LLMRequest(
+        task="vision",
+        prompt="Extract every attendee name from this screenshot.",
+        system_prompt=_EXTRACTION_SYSTEM_PROMPT,
+        image_jpeg=jpeg_bytes,
+        json_schema=_NAMES_SCHEMA,
         max_output_tokens=4096,
-        # A name-reading task doesn't need extended reasoning — disabling it
-        # avoids the "spends its whole budget thinking, returns nothing"
-        # failure mode that thinking-capable models (this one included) can
-        # hit on a complex enough prompt/image.
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
+        # Reading names needs no reasoning; thinking can eat the whole token budget.
+        thinking_budget=0,
     )
 
     try:
-        response = safe_generate_content(
-            model=VISION_MODEL,
-            contents=[
-                "Extract every attendee name from this screenshot.",
-                types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
-            ],
-            config=config,
-        )
-    except GeminiCallError as exc:
+        raw_content = generate(request).text
+    except LLMCallError as exc:
         return [], f"{filename}: {exc}"
-
-    raw_content = response.text
-    if not raw_content or not raw_content.strip():
-        finish_reason = response.candidates[0].finish_reason if response.candidates else None
-        return [], (
-            f"{filename}: Gemini returned an empty response "
-            f"(finish_reason={finish_reason!r})"
-        )
 
     try:
         payload = json.loads(raw_content)
